@@ -15,9 +15,11 @@ typedef struct cell     {
         col;                    // column position of the cell
 } Cell;
 
-Cell *grid;  // 2D array representing the matrix of all the cells
+Cell *grid;                     // 2D array representing the matrix of all the cells
+Cell *local_grid;               // 2D array representing the matrix of just the process
 int num_gens;                   // number of generations to simulate
 int curr_gen;                   // current generation of the program;
+MPI_Datatype cell_type_mpi;     // data type of the cell mpi
 
 int world_size;                 // number of processors
 int rank;
@@ -41,6 +43,10 @@ int main(int argc, char* argv[])    {
     // Get the rank of each process
     MPI_Comm_rank( MPI_COMM_WORLD , &rank);
 
+    // Creating a datatype for the cell
+    MPI_Type_contiguous( 4 , MPI_INT , &cell_type_mpi);
+    MPI_Type_commit( &cell_type_mpi);
+
     //  Get input from the user for the number of generations to simulate
     if (rank == 0)  {
         printf("-----------------------Conway's Game Of Life-----------------------\n");
@@ -54,26 +60,16 @@ int main(int argc, char* argv[])    {
     send_0_to_all_other(&num_gens, &num_gens, MPI_INT);
 
     // allocate space for the grid
-    grid = (Cell *)malloc(NUM_COLS * NUM_ROWS * sizeof(Cell));
+    if (rank == 0)
+        grid = (Cell *)malloc(NUM_COLS * NUM_ROWS * sizeof(Cell));
 
     // Get the seeds for generating random values 
-    GenerateInitialGOL(grid);
+    GenerateInitialGOL();
 
-    if (rank == 0)  {
-        printf("Rank = 0 grid:\n");
-        print_grid();
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (rank == 1)  {
-        printf("Rank = 1 grid:\n");
-        print_grid();
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (rank == 2)  {
-        printf("Rank = 2 grid:\n");
-        print_grid();
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
+    // Gather all the cells info into rank 0
+    MPI_Gather( local_grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , 0 , MPI_COMM_WORLD);
+
+    if (rank == 0)  print_grid();
 
     // Main Loop for simulation
     for (curr_gen = 0; curr_gen < num_gens; curr_gen++) {
@@ -95,13 +91,13 @@ void GenerateInitialGOL()   {
     // send the seeds to each rank
     MPI_Scatter( seeds , 1 , MPI_INT , seed , 1 , MPI_INT , 0 , MPI_COMM_WORLD);
 
-    printf("Rank=%d, seed=%d\n", rank, *seed);
+    // printf("Rank=%d, seed=%d\n", rank, *seed);
 
     int s = NUM_COLS * NUM_ROWS / world_size;
 
     // Array used by each process to initialize thier elements
     // this will later be combined into the global grid element 
-    Cell *local_grid = (Cell *) malloc(s * sizeof(Cell));
+    local_grid = (Cell *) malloc(s * sizeof(Cell));
 
     // seed the random number generator with each unique seed
     srand(*seed);
@@ -116,15 +112,10 @@ void GenerateInitialGOL()   {
         }
     }
 
-    // Creating a datatype for the cell
-    MPI_Datatype cell_type_mpi;
-    MPI_Type_contiguous( 4 , MPI_INT , &cell_type_mpi);
-    MPI_Type_commit( &cell_type_mpi);
-
-    MPI_Allgather( local_grid , s  , cell_type_mpi , grid , s , cell_type_mpi , MPI_COMM_WORLD);
+    // MPI_Allgather( local_grid , s  , cell_type_mpi , grid , s , cell_type_mpi , MPI_COMM_WORLD);
 
     // free(local_grid);
-    // free(seeds);
+    free(seeds);
 }
 
 // function sends a value from rank 0 to all other processes
