@@ -30,6 +30,8 @@ Cell *curr_local_grid;          // 2D array representing the matrix of just one 
 Cell *new_local_grid;           // 2D array representing the matrix of just one process, of the next generation.
 int num_gens;                   // number of generations to simulate
 int curr_gen;                   // current generation of the program;
+int num_cols_per_p;             // number of columns per process
+int num_cells_per_p;            // number of cells per process
 MPI_Datatype cell_type_mpi;     // data type of the cell mpi
 
 int world_size;                 // number of processes
@@ -81,6 +83,10 @@ int main(int argc, char* argv[])    {
     // allocate space for the grid
     if (rank == 0) grid = (Cell *)malloc(NUM_COLS * NUM_ROWS * sizeof(Cell));
 
+    // initiallizing some commonly used variables
+    num_cells_per_p = NUM_COLS * NUM_ROWS / world_size;
+    num_cols_per_p = NUM_COLS / world_size;
+
     // Get the seeds for generating random values 
     GenerateInitialGOL();
 
@@ -115,7 +121,7 @@ void simulate()  {
     int print_freq = 1;
 
     // this grid represents the local grid for each process for the next generation
-    new_local_grid = (Cell *) malloc(((NUM_COLS * NUM_ROWS) / world_size) * sizeof(Cell));
+    new_local_grid = (Cell *) malloc(num_cells_per_p * sizeof(Cell));
 
     // main loop for running program
     while (curr_gen < num_gens) {
@@ -124,7 +130,7 @@ void simulate()  {
         if (curr_gen % print_freq == 0) {
             
             // get all the grids into rank 0
-            MPI_Gather( curr_local_grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , 0 , MPI_COMM_WORLD);
+            MPI_Gather( curr_local_grid , num_cells_per_p , cell_type_mpi , grid , num_cells_per_p , cell_type_mpi , 0 , MPI_COMM_WORLD);
 
             // only rank 0 prints the grid
             if (rank == 0)  {
@@ -141,9 +147,9 @@ void simulate()  {
         // Each process is responsible for NUM_COLS / world_size
         // so ex. NUM_COLS = 16 and world_size = 8: each process is responsible for 2 columns
         // we update the columns then update each row in that column.
-        for (int c = 0; c < NUM_COLS / world_size; c++) {
+        for (int c = 0; c < num_cols_per_p; c++) {
             for (int r = 0; r < NUM_ROWS; r++)  {
-                (new_local_grid + NUM_ROWS * c + r)->alive = determine_state(rank * (NUM_COLS / world_size) + c, r);
+                (new_local_grid + NUM_ROWS * c + r)->alive = determine_state(rank * num_cols_per_p + c, r);
             }
         }
 
@@ -151,9 +157,6 @@ void simulate()  {
 
         // iterate the generation 
         curr_gen++;
-
-        // pause to view grid
-        // sleep(1);
     }
 }
 
@@ -242,23 +245,23 @@ void GenerateInitialGOL()   {
     //     printf("Rank=%d, created communicator %d, with ranks [%d %d %d]\n", rank, neighborhood_comm, ranks[0], ranks[1], ranks[2]);
     // }
 
-
-    int s = NUM_COLS * NUM_ROWS / world_size;
-
     // Array used by each process to initialize thier elements
     // this will later be combined into the global grid element 
-    curr_local_grid = (Cell *) malloc(s * sizeof(Cell));
+    curr_local_grid = (Cell *) malloc(num_cells_per_p * sizeof(Cell));
 
     // seed the random number generator with each unique seed
     srand(*seed);
 
+    int column;
+
     // loop to initalize the grid    
     for (int c = 0; c < NUM_COLS / world_size; c++) {
         for (int r = 0; r < NUM_ROWS; r++) {
-            (curr_local_grid + c*NUM_COLS + r)->alive = (rand() % 2 == 0) ? 1 : 0;
-            (curr_local_grid + c*NUM_COLS + r)->col = rank * (NUM_COLS / world_size) + c;
-            (curr_local_grid + c*NUM_COLS + r)->row = r;
-            (curr_local_grid + c*NUM_COLS + r)->gen = 0;
+            column = c*NUM_COLS;
+            (curr_local_grid + column + r)->alive = (rand() % 2 == 0) ? 1 : 0;
+            (curr_local_grid + column + r)->col = rank * num_cols_per_p + c;
+            (curr_local_grid + column + r)->row = r;
+            (curr_local_grid + column + r)->gen = 0;
         }
     }
 
@@ -279,8 +282,8 @@ int get_cell_state_at_coordinate(int col, int row)   {
     }
 
     // eg. rank_of_owner = col 3 / (16 / 8) = rank 1
-    int rank_of_owner = col / (NUM_COLS / world_size);
-    int state = (curr_local_grid + NUM_ROWS * (col % (NUM_COLS / world_size)) + row)->alive;
+    int rank_of_owner = col / num_cols_per_p;
+    int state = (curr_local_grid + NUM_ROWS * (col % num_cols_per_p) + row)->alive;
     int states[world_size];
     
     // send the state from the owner rank the the rank executing the function
