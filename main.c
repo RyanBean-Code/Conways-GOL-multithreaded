@@ -16,7 +16,8 @@ typedef struct cell     {
 } Cell;
 
 Cell *grid;                     // 2D array representing the matrix of all the cells
-Cell *local_grid;               // 2D array representing the matrix of just the process
+Cell *curr_local_grid;          // 2D array representing the matrix of just one process, of the current generation
+Cell *new_local_grid;           // 2D array representing the matrix of just one process, of the next generation.
 int num_gens;                   // number of generations to simulate
 int curr_gen;                   // current generation of the program;
 MPI_Datatype cell_type_mpi;     // data type of the cell mpi
@@ -24,11 +25,19 @@ MPI_Datatype cell_type_mpi;     // data type of the cell mpi
 int world_size;                 // number of processors
 int rank;
 
+MPI_Group world_group;
+MPI_Group neighborhood_group;
+MPI_Comm neighborhood_comm;
+
 // functions
 void get_seeds(int* seeds);
-void send_0_to_all_other(const void* send, const void* recv, MPI_Datatype type);
+void simulate();
 void print_grid();
 void GenerateInitialGOL();
+int get_cell_state_at_coordinate(int col, int row);
+void get_neighbor_ranks(int *ranks);
+int determine_state(int col, int row);
+int get_neighbor_life_count(int col, int row);
 
 int main(int argc, char* argv[])    {
 
@@ -57,30 +66,148 @@ int main(int argc, char* argv[])    {
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Send the number of generations to each process
-    send_0_to_all_other(&num_gens, &num_gens, MPI_INT);
+    MPI_Bcast( &num_gens , 1 , MPI_INT , 0 , MPI_COMM_WORLD);
 
     // allocate space for the grid
-    if (rank == 0)
-        grid = (Cell *)malloc(NUM_COLS * NUM_ROWS * sizeof(Cell));
+    if (rank == 0) grid = (Cell *)malloc(NUM_COLS * NUM_ROWS * sizeof(Cell));
 
     // Get the seeds for generating random values 
     GenerateInitialGOL();
 
-    // Gather all the cells info into rank 0
-    MPI_Gather( local_grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , 0 , MPI_COMM_WORLD);
-
-    if (rank == 0)  print_grid();
-
-    // Main Loop for simulation
-    for (curr_gen = 0; curr_gen < num_gens; curr_gen++) {
-
+    // print beginning message
+    if (rank == 0) {
+        system("clear");
+        printf("-----------Starting Simulation-----------\n");
     }
+    // MPI_Barrier(MPI_COMM_WORLD);
+    
+    // run simulation
+    simulate();
 
+    //printf("Rank=%d, count at coordinate (1,1) = %d\n", rank, get_neighbor_life_count(1, 1));
+
+    // free all the allocated memory
     free(grid);
+    free(curr_local_grid);
+    free(new_local_grid);
+
+    // Finalize the mpi
     MPI_Finalize();
 }
 
-// int i = (rank * NUM_COLS) / world_size; i < 2 * rank + (NUM_COLS / world_size); i++
+void simulate()  {
+
+    // organize processors before start of simulation
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // initialize currrent generation to 0
+    curr_gen = 0;
+
+    // int used to determine the frequency of printing the grid, freq=1 -> everytime, freq=2 -> every other loop etc.
+    int print_freq = 2;
+
+    // this grid represents the local grid for each process for the next generation
+    new_local_grid = (Cell *) malloc(((NUM_COLS * NUM_ROWS) / world_size) * sizeof(Cell));
+
+    // main loop for running program
+    while (curr_gen < num_gens) {
+
+        // print the grid
+        if (curr_gen % print_freq == 0) {
+            
+            // get all the grids into rank 0
+            MPI_Gather( curr_local_grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , grid , (NUM_COLS * NUM_ROWS / world_size) , cell_type_mpi , 0 , MPI_COMM_WORLD);
+
+            // only rank 0 prints the grid
+            if (rank == 0)  {
+                printf("Generation %d\n", curr_gen); 
+                print_grid();
+            }
+        }
+
+        // line the processors back up to before the next generation
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        // iterate the generation 
+        curr_gen++;
+
+        // nested which will initalize the new grid.
+        // bassic logic for this is:
+        // Each process is responsible for NUM_COLS / world_size
+        // so ex. NUM_COLS = 16 and world_size = 8: each process is responsible for 2 columns
+        // we update the columns then update each row in that column.
+        for (int c = 0; c < NUM_COLS / world_size; c++) {
+            for (int r = 0; r < NUM_ROWS; r++)  {
+                (new_local_grid + NUM_ROWS * c + r)->alive = determine_state(rank * (NUM_COLS / world_size) + c, r);
+            }
+        }
+    }
+}
+
+// Function Used for determining the state of a cell.
+// Conway's game of life rules:
+// i.   A living cell that has less than 3 living neighbors die
+// ii.  A living cell with more than 5 living neighbors also dies
+// iii. A living cell with between 3 and 5 living neighbors lives on to the next generation;
+// iv.  A dead cell will come (back) to life, if it has between 3 and 5 living neighbors. 
+int determine_state(int col, int row)   {
+
+}
+
+
+int get_neighbor_life_count(int col, int row)   {
+    int r, c;
+    int count = 0;
+    for (int i = row - 1; i <= row + 1; i++) {
+        if (i >= NUM_ROWS)  {
+            r = 0;
+        }
+        else if (i < 0) {
+            r = NUM_ROWS - 1;
+        }
+        else {  
+            r = i;
+        }
+        for (int j = col - 1; j <= col + 1; j++)    {
+            if (j < 0)    {
+                c = NUM_COLS - 1;
+            }
+            else if (j >= NUM_COLS) {
+                c = 0;
+            }
+            else {
+                c = j;
+            }
+            count += get_cell_state_at_coordinate(c, r);
+        }
+    }
+
+    count -= get_cell_state_at_coordinate(col, row);
+    return count;
+}
+
+void get_neighbor_ranks(int *ranks)    {
+
+    // if it is the root rank, the left neighbor is the last column and the right neighbor is rank 1
+    if (rank == 0)  {
+        *ranks = world_size - 1;
+        *(ranks + 1) = rank;
+        *(ranks + 2) = rank + 1;
+    }
+    // else if the rank is the the last root, the right neighbor in the root rank 0 and left neighbor second the last rank
+    else if (rank == world_size - 1)    {
+        *ranks = rank - 1;
+        *(ranks + 1) = rank;
+        *(ranks + 2) = 0;
+    }
+    // otherwise it's a rank in the middle so the left neighbor is just rank - 1 and right is rank + 1
+    else    {
+        *ranks = rank - 1;
+        *(ranks + 1) = rank;
+        *(ranks + 2) = rank + 1;
+    }
+}
+
 void GenerateInitialGOL()   {
     int *seeds = (int *) malloc(world_size * sizeof(int));
     int *seed = (int *) malloc(sizeof(int));
@@ -91,13 +218,22 @@ void GenerateInitialGOL()   {
     // send the seeds to each rank
     MPI_Scatter( seeds , 1 , MPI_INT , seed , 1 , MPI_INT , 0 , MPI_COMM_WORLD);
 
-    // printf("Rank=%d, seed=%d\n", rank, *seed);
+    // create local communication groups
+    if (world_size > 1) {
+        MPI_Comm_group(MPI_COMM_WORLD, &world_group);
+        int ranks[3];
+        get_neighbor_ranks(ranks);
+        MPI_Group_incl( world_group , 2 , ranks , &neighborhood_group); //neighborhood_comm
+        MPI_Comm_create( MPI_COMM_WORLD , neighborhood_group , &neighborhood_comm);
+        printf("Rank=%d, created communicator %d, with ranks [%d %d %d]\n", rank, neighborhood_comm, ranks[0], ranks[1], ranks[2]);
+    }
+
 
     int s = NUM_COLS * NUM_ROWS / world_size;
 
     // Array used by each process to initialize thier elements
     // this will later be combined into the global grid element 
-    local_grid = (Cell *) malloc(s * sizeof(Cell));
+    curr_local_grid = (Cell *) malloc(s * sizeof(Cell));
 
     // seed the random number generator with each unique seed
     srand(*seed);
@@ -105,10 +241,10 @@ void GenerateInitialGOL()   {
     // loop to initalize the grid    
     for (int c = 0; c < NUM_COLS / world_size; c++) {
         for (int r = 0; r < NUM_ROWS; r++) {
-            (local_grid + c*NUM_COLS + r)->alive = (rand() % 2 == 0) ? 1 : 0;
-            (local_grid + c*NUM_COLS + r)->col = rank * (NUM_COLS / world_size) + c;
-            (local_grid + c*NUM_COLS + r)->row = r;
-            (local_grid + c*NUM_COLS + r)->gen = 0;
+            (curr_local_grid + c*NUM_COLS + r)->alive = (rand() % 2 == 0) ? 1 : 0;
+            (curr_local_grid + c*NUM_COLS + r)->col = rank * (NUM_COLS / world_size) + c;
+            (curr_local_grid + c*NUM_COLS + r)->row = r;
+            (curr_local_grid + c*NUM_COLS + r)->gen = 0;
         }
     }
 
@@ -116,19 +252,28 @@ void GenerateInitialGOL()   {
 
     // free(local_grid);
     free(seeds);
+    free(seed);
 }
 
-// function sends a value from rank 0 to all other processes
-void send_0_to_all_other(const void* send, const void* recv, MPI_Datatype type)    {
-    for (int i = 1; i < world_size; i++)    {
-        if (rank == 0)  {
-            MPI_Send(send, 1 , type , i , 0 , MPI_COMM_WORLD);
-        }
-        else if (rank == i) {
-            MPI_Recv(recv, 1 , type , 0 , 0 , MPI_COMM_WORLD , MPI_STATUS_IGNORE);
-        }
-        MPI_Barrier(MPI_COMM_WORLD);
+// int i = (rank * NUM_COLS) / world_size; i < 2 * rank + (NUM_COLS / world_size); i++
+int get_cell_state_at_coordinate(int col, int row)   {
+
+    // check if the col and row values are valid
+    if (col >= NUM_COLS || row >= NUM_ROWS)   {
+        printf("ERROR - get_cell_state_at_coordinate() row or col > NUM_COLS || NUM_ROWS\n");
+        exit(1);
     }
+
+    // eg. rank_of_owner = col 3 / (16 / 8) = rank 1
+    int rank_of_owner = col / (NUM_COLS / world_size);
+    int state = (curr_local_grid + NUM_ROWS * (col % (NUM_COLS / world_size)) + row)->alive;
+    int states[world_size];
+    
+    // send the state from the owner rank the the rank executing the function
+    // not really likeing this method of doing is but couldn't get MPI_Sendrecv, or MPI_Bcast, or creating my own MPI_Comm to work
+    MPI_Allgather( &state , 1 , MPI_INT , states , 1 , MPI_INT , MPI_COMM_WORLD);
+
+    return states[rank_of_owner];
 }
 
 void get_seeds(int* seeds)  {
@@ -137,6 +282,7 @@ void get_seeds(int* seeds)  {
 }
 
 void print_grid()   {
+    // Gather all the cells info into rank 0
     for (int r = 0; r < NUM_ROWS; r++)  {
         for (int c = 0; c < NUM_COLS; c++)  {
             if ((grid + c * NUM_COLS + r)->alive == 1)   {
