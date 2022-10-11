@@ -1,12 +1,22 @@
+/*
+    Ryan Bean
+    Multithreaded implementation of Conways game of life using mpi.h
+    Created for CptS 411 at WSU
+
+    Build:  mpicc -o main main.c
+    Run:    mpirun -np <number of processes> <path to main>
+*/
+
 #include <mpi.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 //  Number of rows and columns, dont have to be equal but they do have to be divisiable by the number of processes
-#define NUM_ROWS    16
-#define NUM_COLS    16
+#define NUM_ROWS    8
+#define NUM_COLS    8
 
 typedef struct cell     {
     int alive,                  // 1 means alive 0 means dead
@@ -22,8 +32,8 @@ int num_gens;                   // number of generations to simulate
 int curr_gen;                   // current generation of the program;
 MPI_Datatype cell_type_mpi;     // data type of the cell mpi
 
-int world_size;                 // number of processors
-int rank;
+int world_size;                 // number of processes
+int rank;                       // rank of the process
 
 MPI_Group world_group;
 MPI_Group neighborhood_group;
@@ -79,15 +89,13 @@ int main(int argc, char* argv[])    {
         system("clear");
         printf("-----------Starting Simulation-----------\n");
     }
-    // MPI_Barrier(MPI_COMM_WORLD);
     
     // run simulation
     simulate();
 
-    //printf("Rank=%d, count at coordinate (1,1) = %d\n", rank, get_neighbor_life_count(1, 1));
-
     // free all the allocated memory
-    free(grid);
+    if (rank == 0) free(grid);
+
     free(curr_local_grid);
     free(new_local_grid);
 
@@ -104,7 +112,7 @@ void simulate()  {
     curr_gen = 0;
 
     // int used to determine the frequency of printing the grid, freq=1 -> everytime, freq=2 -> every other loop etc.
-    int print_freq = 2;
+    int print_freq = 1;
 
     // this grid represents the local grid for each process for the next generation
     new_local_grid = (Cell *) malloc(((NUM_COLS * NUM_ROWS) / world_size) * sizeof(Cell));
@@ -128,9 +136,6 @@ void simulate()  {
         // line the processors back up to before the next generation
         MPI_Barrier(MPI_COMM_WORLD);
 
-        // iterate the generation 
-        curr_gen++;
-
         // nested which will initalize the new grid.
         // bassic logic for this is:
         // Each process is responsible for NUM_COLS / world_size
@@ -141,6 +146,14 @@ void simulate()  {
                 (new_local_grid + NUM_ROWS * c + r)->alive = determine_state(rank * (NUM_COLS / world_size) + c, r);
             }
         }
+
+        curr_local_grid = new_local_grid;
+
+        // iterate the generation 
+        curr_gen++;
+
+        // pause to view grid
+        // sleep(1);
     }
 }
 
@@ -152,6 +165,10 @@ void simulate()  {
 // iv.  A dead cell will come (back) to life, if it has between 3 and 5 living neighbors. 
 int determine_state(int col, int row)   {
 
+    // number of neighbors alive.
+    int neighbor_life_count = get_neighbor_life_count(col, row);
+    
+    return (neighbor_life_count >= 3 && neighbor_life_count <= 5) ? 1 : 0;
 }
 
 
@@ -191,19 +208,16 @@ void get_neighbor_ranks(int *ranks)    {
     // if it is the root rank, the left neighbor is the last column and the right neighbor is rank 1
     if (rank == 0)  {
         *ranks = world_size - 1;
-        *(ranks + 1) = rank;
-        *(ranks + 2) = rank + 1;
+        *(ranks + 1) = rank + 1;
     }
     // else if the rank is the the last root, the right neighbor in the root rank 0 and left neighbor second the last rank
     else if (rank == world_size - 1)    {
         *ranks = rank - 1;
-        *(ranks + 1) = rank;
-        *(ranks + 2) = 0;
+        *(ranks + 1) = 0;
     }
     // otherwise it's a rank in the middle so the left neighbor is just rank - 1 and right is rank + 1
     else    {
         *ranks = rank - 1;
-        *(ranks + 1) = rank;
         *(ranks + 2) = rank + 1;
     }
 }
@@ -219,14 +233,14 @@ void GenerateInitialGOL()   {
     MPI_Scatter( seeds , 1 , MPI_INT , seed , 1 , MPI_INT , 0 , MPI_COMM_WORLD);
 
     // create local communication groups
-    if (world_size > 1) {
-        MPI_Comm_group(MPI_COMM_WORLD, &world_group);
-        int ranks[3];
-        get_neighbor_ranks(ranks);
-        MPI_Group_incl( world_group , 2 , ranks , &neighborhood_group); //neighborhood_comm
-        MPI_Comm_create( MPI_COMM_WORLD , neighborhood_group , &neighborhood_comm);
-        printf("Rank=%d, created communicator %d, with ranks [%d %d %d]\n", rank, neighborhood_comm, ranks[0], ranks[1], ranks[2]);
-    }
+    // if (world_size > 1) {
+    //     MPI_Comm_group(MPI_COMM_WORLD, &world_group);
+    //     int ranks[3];
+    //     get_neighbor_ranks(ranks);
+    //     MPI_Group_incl( world_group , 2 , ranks , &neighborhood_group); //neighborhood_comm
+    //     MPI_Comm_create( MPI_COMM_WORLD , neighborhood_group , &neighborhood_comm);
+    //     printf("Rank=%d, created communicator %d, with ranks [%d %d %d]\n", rank, neighborhood_comm, ranks[0], ranks[1], ranks[2]);
+    // }
 
 
     int s = NUM_COLS * NUM_ROWS / world_size;
