@@ -37,6 +37,15 @@ MPI_Datatype cell_type_mpi;     // data type of the cell mpi
 int world_size;                 // number of processes
 int rank;                       // rank of the process
 
+double total_runtime;           // represents the runtime of the whole program
+double total_commtime;          // represents the time taken by all the communication steps.
+
+
+clock_t start_rt,               // the time at the start of the program
+        end_rt,                 // the time at the end of the program
+        start_ct,               // used to calculate communication time steps
+        end_ct;                 // used to calculate communication time steps
+
 MPI_Group world_group;
 MPI_Group neighborhood_group;
 MPI_Comm neighborhood_comm;
@@ -77,8 +86,20 @@ int main(int argc, char* argv[])    {
     }
     MPI_Barrier(MPI_COMM_WORLD);
 
+    // start the runtime clock here
+    start_rt = clock();
+
+    // communication step so we start the comm time
+    start_ct = clock();
+
     // Send the number of generations to each process
     MPI_Bcast( &num_gens , 1 , MPI_INT , 0 , MPI_COMM_WORLD);
+
+    // communcation ends
+    end_ct = clock();
+
+    // update the total communcation time
+    total_commtime = ((double)end_ct - (double)start_ct) / (double)CLOCKS_PER_SEC;
 
     // allocate space for the grid
     if (rank == 0) grid = (Cell *)malloc(NUM_COLS * NUM_ROWS * sizeof(Cell));
@@ -99,7 +120,22 @@ int main(int argc, char* argv[])    {
     // run simulation
     simulate();
 
-    // free all the allocated memory
+    // simulation has finished so get the time.
+    end_rt = clock();
+
+    total_runtime = ((double)end_rt - (double)start_rt) / (double)CLOCKS_PER_SEC;
+    
+    double average_commtime, average_runtime;
+    // do time calculations
+    MPI_Allreduce( &total_commtime , &average_commtime , 1 , MPI_DOUBLE , MPI_SUM , MPI_COMM_WORLD);
+    average_commtime = average_commtime / world_size;
+
+    MPI_Allreduce( &total_runtime , &average_runtime , 1 , MPI_DOUBLE , MPI_SUM , MPI_COMM_WORLD);
+    average_runtime = average_runtime / world_size;
+
+    printf("Rank=%d, num processes=%d, grid size=%d, num generations=%d, total_commtime=%lf, total_runtime=%lf\n", rank, world_size, NUM_COLS, num_gens, average_commtime, average_runtime - average_commtime);
+
+    // wsl all the allocated memory
     if (rank == 0) free(grid);
 
     free(curr_local_grid);
@@ -111,8 +147,14 @@ int main(int argc, char* argv[])    {
 
 void simulate()  {
 
+    // communication step
+    start_ct = clock();
+
     // organize processors before start of simulation
     MPI_Barrier(MPI_COMM_WORLD);
+
+    end_ct = clock();
+    total_commtime += ((double)end_ct - (double)start_ct) / (double)CLOCKS_PER_SEC;
 
     // initialize currrent generation to 0
     curr_gen = 0;
@@ -139,8 +181,14 @@ void simulate()  {
             }
         }
 
+        // communication step
+        start_ct = clock();
+
         // line the processors back up to before the next generation
         MPI_Barrier(MPI_COMM_WORLD);
+
+        end_ct = clock();
+        total_commtime += ((double)end_ct - (double)start_ct) / (double)CLOCKS_PER_SEC;
 
         // nested which will initalize the new grid.
         // bassic logic for this is:
@@ -230,20 +278,24 @@ void GenerateInitialGOL()   {
     int *seed = (int *) malloc(sizeof(int));
     if (rank == 0)
         get_seeds(seeds); //seed = seeds[0];
+
+    // communication step
+    start_ct = clock();
+    
     MPI_Barrier(MPI_COMM_WORLD);
+
+    end_ct = clock();
+
+    total_commtime += ((double)end_ct - (double)start_ct) / (double)CLOCKS_PER_SEC;
+
+    // communication step
+    start_ct = clock();
 
     // send the seeds to each rank
     MPI_Scatter( seeds , 1 , MPI_INT , seed , 1 , MPI_INT , 0 , MPI_COMM_WORLD);
 
-    // create local communication groups
-    // if (world_size > 1) {
-    //     MPI_Comm_group(MPI_COMM_WORLD, &world_group);
-    //     int ranks[3];
-    //     get_neighbor_ranks(ranks);
-    //     MPI_Group_incl( world_group , 2 , ranks , &neighborhood_group); //neighborhood_comm
-    //     MPI_Comm_create( MPI_COMM_WORLD , neighborhood_group , &neighborhood_comm);
-    //     printf("Rank=%d, created communicator %d, with ranks [%d %d %d]\n", rank, neighborhood_comm, ranks[0], ranks[1], ranks[2]);
-    // }
+    end_ct = clock();
+    total_commtime += ((double)end_ct - (double)start_ct) / (double)CLOCKS_PER_SEC;
 
     // Array used by each process to initialize thier elements
     // this will later be combined into the global grid element 
@@ -286,9 +338,15 @@ int get_cell_state_at_coordinate(int col, int row)   {
     int state = (curr_local_grid + NUM_ROWS * (col % num_cols_per_p) + row)->alive;
     int states[world_size];
     
+    // communication step
+    start_ct = clock();
+
     // send the state from the owner rank the the rank executing the function
     // not really likeing this method of doing is but couldn't get MPI_Sendrecv, or MPI_Bcast, or creating my own MPI_Comm to work
     MPI_Allgather( &state , 1 , MPI_INT , states , 1 , MPI_INT , MPI_COMM_WORLD);
+
+    end_ct = clock();
+    total_commtime += ((double)end_ct - (double)start_ct) / (double)CLOCKS_PER_SEC;
 
     return states[rank_of_owner];
 }
